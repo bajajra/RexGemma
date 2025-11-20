@@ -183,7 +183,7 @@ def make_packed_dataset(
         lambda batch: {"length": [pack_len] * len(batch["input_ids"])},
         batched=True,
         desc="Adding length column",
-        num_proc=24,
+        num_proc=num_proc,
         batch_size=1000,
     )
 
