@@ -234,7 +234,7 @@ def parse_args():
     ap.add_argument("--logging-steps", type=int, default=100)
     ap.add_argument("--pad-to-multiple-of", type=int, default=0, help="Not used for packed blocks; kept for compat")
     ap.add_argument("--max-train-pct", type=float, default=1.0, help="Use first pct of packed dataset (0<..<=1.0)")
-    ap.add_argument("run_name", type=str, help="Run name for logging")
+    ap.add_argument("--run_name", type=str, help="Run name for logging")
     return ap.parse_args()
 
 
