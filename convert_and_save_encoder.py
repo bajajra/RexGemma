@@ -1,6 +1,6 @@
 # convert_and_save_encoder.py
 # -*- coding: utf-8 -*-
-import argparse, os, copy, torch
+import argparse, os, copy, shutil, torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from transformers.models.gemma3.configuration_gemma3 import Gemma3TextConfig
 
@@ -34,6 +34,8 @@ def main():
     ap.add_argument("--out", required=True, help="Where to save the encoder checkpoint")
     ap.add_argument("--add-mask-token", action="store_true",
                     help="Add <mask> to tokenizer vocab if missing (recommended for MLM)")
+    ap.add_argument("--hub-format", action="store_true",
+                    help="Save in Hub-ready format (adds auto_map, model code, __init__.py)")
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
@@ -75,18 +77,51 @@ def main():
         enc.tie_weights()
         assert enc.lm_head.weight.data_ptr() == enc.get_input_embeddings().weight.data_ptr()
 
-    # 7) Save encoder + tokenizer
+    # 7) Configure for Hub if requested
+    if args.hub_format:
+        enc.config.auto_map = {
+            "AutoModel": "modeling_gemma3_biencoder.Gemma3EncoderForMaskedLM",
+            "AutoModelForMaskedLM": "modeling_gemma3_biencoder.Gemma3EncoderForMaskedLM",
+        }
+        enc.config.architectures = ["Gemma3EncoderForMaskedLM"]
+
+    # 8) Save encoder + tokenizer
     print(f"[INFO] Saving encoder checkpoint to: {args.out}")
-    enc.save_pretrained(args.out)
+    enc.save_pretrained(args.out, safe_serialization=True)
     tok.save_pretrained(args.out)
+
+    # 9) Copy model code for Hub-ready format
+    if args.hub_format:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        src_model_file = os.path.join(script_dir, "gemma3_biencoder.py")
+        dst_model_file = os.path.join(args.out, "modeling_gemma3_biencoder.py")
+        if os.path.exists(src_model_file):
+            shutil.copy2(src_model_file, dst_model_file)
+            print(f"[INFO] Copied modeling_gemma3_biencoder.py")
+        
+        # Create __init__.py
+        init_file = os.path.join(args.out, "__init__.py")
+        with open(init_file, "w") as f:
+            f.write("from .modeling_gemma3_biencoder import Gemma3EncoderForMaskedLM\n")
+        print(f"[INFO] Created __init__.py")
+
     print("[INFO] Done.")
 
 
 if __name__ == "__main__":
     main()
 
-"""python convert_and_save_encoder.py \
+"""
+# Basic conversion (for local training):
+python convert_and_save_encoder.py \
   --src google/gemma-3-270m \
   --out ./gemma3-270m-encoder-bidir-model \
   --add-mask-token
+
+# Hub-ready format (can upload directly):
+python convert_and_save_encoder.py \
+  --src google/gemma-3-270m \
+  --out ./gemma3-270m-encoder-bidir-model \
+  --add-mask-token \
+  --hub-format
 """
