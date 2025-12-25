@@ -25,9 +25,9 @@ from gemma3_biencoder import Gemma3EncoderForMaskedLM
 
 def generate_model_card(
     model_name: str,
-    base_model: str = "google/gemma-3-270m",
-    sliding_window: int = 256,
-    max_seq_len: int = 512,
+    base_model: str = "thebajajra/Gemma3-270M-encoder",
+    sliding_window: int = 512,
+    max_seq_len: int = 2048,
     vocab_size: int = 262145,
 ) -> str:
     """Generate a README.md model card for the Hub."""
@@ -35,31 +35,34 @@ def generate_model_card(
 library_name: transformers
 tags:
   - gemma3
+  - gemma3_text
   - encoder
   - bidirectional
   - masked-language-modeling
   - text-embeddings
-license: gemma
+  - feature-extraction
+  - custom_code
+license: mit
 base_model: {base_model}
 pipeline_tag: fill-mask
 ---
 
 # {model_name}
 
-A **bidirectional encoder** based on [Gemma 3]({base_model}), trained with Masked Language Modeling (MLM).
+A **bidirectional encoder** fine-tuned from [{base_model}](https://huggingface.co/{base_model}) with Masked Language Modeling (MLM).
 
 ## Model Description
 
-This model converts the Gemma 3 decoder architecture into a BERT-style bidirectional encoder by:
-- Replacing causal attention with bidirectional attention
-- Adding a masked language modeling head (tied to input embeddings)
-- Training with 15% token masking (BERT-style MLM)
+This model is a BERT-style bidirectional encoder based on Gemma 3 architecture:
+- Bidirectional attention (not causal)
+- Masked language modeling head (tied to input embeddings)
+- Trained with 15% token masking (BERT-style MLM)
 
 ### Architecture Details
 
 | Parameter | Value |
 |-----------|-------|
-| Base Model | `{base_model}` |
+| Base Model | [`{base_model}`](https://huggingface.co/{base_model}) |
 | Vocab Size | {vocab_size:,} |
 | Sliding Window | {sliding_window} |
 | Max Sequence Length | {max_seq_len} |
@@ -70,36 +73,60 @@ This model converts the Gemma 3 decoder architecture into a BERT-style bidirecti
 ### Loading the Model
 
 ```python
-from transformers import AutoTokenizer, AutoModel
+from transformers import AutoTokenizer, AutoModelForMaskedLM
 
-# Load with trust_remote_code=True for custom model class
 tokenizer = AutoTokenizer.from_pretrained("{model_name}")
-model = AutoModel.from_pretrained("{model_name}", trust_remote_code=True)
+model = AutoModelForMaskedLM.from_pretrained("{model_name}", trust_remote_code=True)
 ```
 
 ### Masked Language Modeling
 
 ```python
-from transformers import pipeline
+from transformers import AutoModelForMaskedLM, AutoTokenizer, pipeline
 
-# Fill-mask pipeline
-fill_mask = pipeline("fill-mask", model="{model_name}", trust_remote_code=True)
-result = fill_mask("The capital of France is <mask>.")
-print(result)
+model = AutoModelForMaskedLM.from_pretrained("{model_name}", trust_remote_code=True)
+tokenizer = AutoTokenizer.from_pretrained("{model_name}")
+
+fill = pipeline("fill-mask", model=model, tokenizer=tokenizer)
+fill("Best [MASK] headphones under $100.")
 ```
 
-### Getting Embeddings
+### Embeddings / Feature Extraction
 
 ```python
 import torch
+from transformers import AutoTokenizer, AutoModel
 
-text = "Hello, how are you?"
-inputs = tokenizer(text, return_tensors="pt")
+tokenizer = AutoTokenizer.from_pretrained("{model_name}")
+model = AutoModel.from_pretrained("{model_name}", trust_remote_code=True)
+
+texts = ["wireless mouse", "ergonomic mouse pad"]
+inputs = tokenizer(texts, padding=True, truncation=True, return_tensors="pt")
 
 with torch.no_grad():
     outputs = model(**inputs)
-    # Mean pooling over sequence
-    embeddings = outputs.hidden_states[-1].mean(dim=1)
+    # Mean-pool last hidden state
+    attn = inputs["attention_mask"].unsqueeze(-1)
+    embeddings = (outputs.last_hidden_state * attn).sum(1) / attn.sum(1)
+    # Normalize for cosine similarity
+    embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1)
+```
+
+### Sentence-Transformers
+
+```python
+from transformers import AutoModelForMaskedLM, AutoTokenizer
+from sentence_transformers import SentenceTransformer
+
+model_mlm = AutoModelForMaskedLM.from_pretrained("{model_name}", trust_remote_code=True)
+encoder = model_mlm.encoder
+tokenizer = AutoTokenizer.from_pretrained("{model_name}")
+
+ENCODER_DIR = "encoder-only"
+encoder.save_pretrained(ENCODER_DIR)
+tokenizer.save_pretrained(ENCODER_DIR)
+
+model = SentenceTransformer(ENCODER_DIR)
 ```
 
 ## Training
@@ -107,15 +134,15 @@ with torch.no_grad():
 This model was trained using MLM on packed sequences with:
 - Dynamic BERT-style token masking (15%)
 - AdamW optimizer with fused kernels
-- Mixed precision (bf16)
+- Mixed precision training
 
 ## License
 
-This model inherits the [Gemma license](https://ai.google.dev/gemma/terms) from the base model.
+MIT License
 
 ## Citation
 
-If you use this model, please cite both the Gemma paper and this repository.
+If you use this model, please cite this repository.
 """
 
 
@@ -140,7 +167,7 @@ def main():
     )
     ap.add_argument(
         "--base-model",
-        default="google/gemma-3-270m",
+        default="thebajajra/Gemma3-270M-encoder",
         help="Base model name for documentation",
     )
     ap.add_argument(
@@ -239,8 +266,8 @@ def main():
     print(f"[INFO] ✓ Created __init__.py")
 
     # ---- Generate model card ----
-    sliding_window = getattr(model.config, "sliding_window", 256)
-    max_seq_len = getattr(model.config, "max_position_embeddings", 32768)
+    sliding_window = getattr(model.config, "sliding_window", 512)
+    max_seq_len = getattr(model.config, "max_position_embeddings", 2048)
     vocab_size = getattr(model.config, "vocab_size", 262145)
 
     readme_content = generate_model_card(
@@ -328,15 +355,21 @@ if __name__ == "__main__":
 # Export locally:
 python export_to_hf_hub.py \
   --checkpoint-dir ./gemma3-270m_sw256_512sql_4096tk/checkpoint-5000 \
-  --output-dir ./gemma3-encoder-270m-mlm \
-  --base-model google/gemma-3-270m
+  --output-dir ./gemma3-encoder-270m-mlm
 
 # Export and push to Hub:
 python export_to_hf_hub.py \
   --checkpoint-dir ./gemma3-270m_sw256_512sql_4096tk/checkpoint-5000 \
   --output-dir ./gemma3-encoder-270m-mlm \
-  --base-model google/gemma-3-270m \
   --push-to-hub \
-  --hub-repo-id your-username/gemma3-encoder-270m-mlm
+  --hub-repo-id thebajajra/RexGemma-new
+
+# With custom base model reference:
+python export_to_hf_hub.py \
+  --checkpoint-dir ./gemma3-270m_sw256_512sql_4096tk/checkpoint-5000 \
+  --output-dir ./gemma3-encoder-270m-mlm \
+  --base-model thebajajra/Gemma3-270M-encoder \
+  --push-to-hub \
+  --hub-repo-id thebajajra/RexGemma-new
 """
 
