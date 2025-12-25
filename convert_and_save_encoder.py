@@ -36,9 +36,26 @@ def main():
                     help="Add <mask> to tokenizer vocab if missing (recommended for MLM)")
     ap.add_argument("--hub-format", action="store_true",
                     help="Save in Hub-ready format (adds auto_map, model code, __init__.py)")
+    # Model config overrides
+    ap.add_argument("--dtype", choices=["auto", "float32", "float16", "bfloat16"], default="auto",
+                    help="Model dtype (default: auto, inherits from source)")
+    ap.add_argument("--sliding-window", type=int, default=None,
+                    help="Override sliding window size (e.g., 512)")
+    ap.add_argument("--max-position-embeddings", type=int, default=None,
+                    help="Override max position embeddings / context length (e.g., 2048)")
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
+
+    # Determine target dtype
+    if args.dtype == "float32":
+        target_dtype = torch.float32
+    elif args.dtype == "float16":
+        target_dtype = torch.float16
+    elif args.dtype == "bfloat16":
+        target_dtype = torch.bfloat16
+    else:
+        target_dtype = None  # will inherit from source
 
     # 1) Load original Gemma-3 decoder
     print(f"[INFO] Loading source model: {args.src}")
@@ -47,11 +64,25 @@ def main():
 
     # 2) Create encoder-only model with the *text* config
     text_cfg = _extract_text_config(dec)
+    
+    # Apply config overrides before creating model
+    if args.sliding_window is not None:
+        text_cfg.sliding_window = args.sliding_window
+        print(f"[INFO] Set sliding_window = {args.sliding_window}")
+    if args.max_position_embeddings is not None:
+        text_cfg.max_position_embeddings = args.max_position_embeddings
+        print(f"[INFO] Set max_position_embeddings = {args.max_position_embeddings}")
+    
     enc = Gemma3EncoderForMaskedLM(text_cfg)  # this class sets bidirectional + no cache internally
 
-    # 3) Align dtype to avoid load_state_dict dtype mismatch
-    ref_dtype = next((p for p in dec.model.parameters()), None).dtype if hasattr(dec, "model") \
-                else next(dec.parameters()).dtype
+    # 3) Determine final dtype
+    if target_dtype is not None:
+        ref_dtype = target_dtype
+        print(f"[INFO] Using dtype: {target_dtype}")
+    else:
+        ref_dtype = next((p for p in dec.model.parameters()), None).dtype if hasattr(dec, "model") \
+                    else next(dec.parameters()).dtype
+        print(f"[INFO] Inheriting dtype from source: {ref_dtype}")
     enc.to(ref_dtype)
 
     # 4) Copy backbone (embed + transformer layers) from decoder into encoder
@@ -123,5 +154,15 @@ python convert_and_save_encoder.py \
   --src google/gemma-3-270m \
   --out ./gemma3-270m-encoder-bidir-model \
   --add-mask-token \
+  --hub-format
+
+# RexGemma-style (fp32, sliding window 512, 2048 context):
+python convert_and_save_encoder.py \
+  --src google/gemma-3-270m \
+  --out ./gemma3-270m-encoder-sw512 \
+  --add-mask-token \
+  --dtype float32 \
+  --sliding-window 512 \
+  --max-position-embeddings 2048 \
   --hub-format
 """
